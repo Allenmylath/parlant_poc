@@ -26,8 +26,7 @@ START_TIME = time.time()
 SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = int(os.getenv("PORT", "8000"))
 
-# Global Parlant server and agent
-parlant_server: p.Server = None
+# Global agent reference
 police_agent: p.Agent = None
 
 
@@ -167,143 +166,147 @@ async def process_chat_stateless(
 
 async def main():
     """Initialize and run Parlant server"""
-    global parlant_server, police_agent
+    global police_agent
     
     print(f"Starting Kerala Police Assistant v{VERSION}...")
     
-    # Create Parlant server with transient stores
-    parlant_server = p.Server(
+    # Use async context manager pattern (recommended by Parlant docs)
+    async with p.Server(
         host=SERVER_HOST,
         port=SERVER_PORT,
         nlp_service=p.NLPServices.openai,
-        session_store='transient',
+        session_store='transient',  # In-memory for stateless deployment
         customer_store='transient',
         variable_store='transient',
-    )
-    
-    # Wait for ready
-    await parlant_server.ready.wait()
-    print("Parlant server ready")
-    
-    # Setup agent
-    police_agent = await setup_agent(parlant_server)
-    
-    # Get FastAPI app
-    app = parlant_server.api
-    
-    # Add CORS
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=os.getenv("ALLOWED_ORIGINS", "*").split(","),
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    
-    # Custom endpoints
-    @app.get("/", response_model=HealthResponse)
-    async def root():
-        return HealthResponse(
-            status="running",
-            version=VERSION,
-            services={
-                "openai": bool(os.getenv("OPENAI_API_KEY")),
-                "qdrant": bool(os.getenv("QDRANT_URL")),
-                "sarvam": bool(os.getenv("SARVAM_API_KEY"))
-            },
-            uptime_seconds=time.time() - START_TIME,
-            memory_usage_mb=get_memory_usage()
+    ) as server:
+        
+        # Wait for server to be ready
+        await server.ready.wait()
+        print(f"Parlant server ready on {SERVER_HOST}:{SERVER_PORT}")
+        
+        # Setup agent
+        police_agent = await setup_agent(server)
+        
+        # Get FastAPI app
+        app = server.api
+        
+        # Add CORS
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=os.getenv("ALLOWED_ORIGINS", "*").split(","),
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
         )
-    
-    @app.get("/health", response_model=HealthResponse)
-    async def health():
-        try:
-            services = {
-                "openai": bool(os.getenv("OPENAI_API_KEY")),
-                "sarvam": bool(os.getenv("SARVAM_API_KEY"))
-            }
-            
-            try:
-                services["qdrant"] = get_rag_tool().health_check()
-            except:
-                services["qdrant"] = False
-            
+        
+        # Custom endpoints
+        @app.get("/", response_model=HealthResponse)
+        async def root():
             return HealthResponse(
-                status="healthy" if all(services.values()) else "degraded",
+                status="running",
                 version=VERSION,
-                services=services,
+                services={
+                    "openai": bool(os.getenv("OPENAI_API_KEY")),
+                    "qdrant": bool(os.getenv("QDRANT_URL")),
+                    "sarvam": bool(os.getenv("SARVAM_API_KEY"))
+                },
                 uptime_seconds=time.time() - START_TIME,
                 memory_usage_mb=get_memory_usage()
             )
-        except Exception as e:
-            raise HTTPException(status_code=503, detail="Service unhealthy")
-    
-    @app.post("/chat", response_model=ChatResponse)
-    async def chat(request: ChatRequest):
-        if not request.message.strip():
-            raise HTTPException(status_code=400, detail="Message cannot be empty")
         
-        return await process_chat_stateless(
-            message=request.message,
-            history=[msg.dict() for msg in request.history],
-            max_sources=request.max_sources
-        )
-    
-    @app.post("/transcribe", response_model=TranscribeResponse)
-    async def transcribe_audio(audio: UploadFile = File(...)):
-        try:
-            if not audio.content_type.startswith('audio/'):
-                raise HTTPException(status_code=400, detail="Must be audio file")
-            
-            audio_data = await audio.read()
-            
-            if not audio_data:
-                raise HTTPException(status_code=400, detail="Empty file")
-            
-            if len(audio_data) > 10 * 1024 * 1024:
-                raise HTTPException(status_code=400, detail="File too large (max 10MB)")
-            
-            transcript, lang = get_transcription_tool().transcribe(audio_data)
-            
-            if not transcript:
-                raise HTTPException(status_code=400, detail="Transcription failed")
-            
-            return TranscribeResponse(text=transcript, detected_language=lang)
-            
-        except HTTPException:
-            raise
-        except Exception as e:
-            print(f"Transcription error: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    @app.get("/metrics")
-    async def metrics():
-        return {
-            "uptime_seconds": time.time() - START_TIME,
-            "memory_usage_mb": get_memory_usage(),
-            "version": VERSION
-        }
-    
-    @app.exception_handler(Exception)
-    async def global_exception_handler(request: Request, exc: Exception):
-        print(f"Error: {exc}")
-        if os.getenv("DEBUG") == "true":
-            print(traceback.format_exc())
+        @app.get("/health", response_model=HealthResponse)
+        async def health():
+            """Fast health check for Render"""
+            try:
+                services = {
+                    "openai": bool(os.getenv("OPENAI_API_KEY")),
+                    "sarvam": bool(os.getenv("SARVAM_API_KEY"))
+                }
+                
+                try:
+                    services["qdrant"] = get_rag_tool().health_check()
+                except:
+                    services["qdrant"] = False
+                
+                return HealthResponse(
+                    status="healthy" if all(services.values()) else "degraded",
+                    version=VERSION,
+                    services=services,
+                    uptime_seconds=time.time() - START_TIME,
+                    memory_usage_mb=get_memory_usage()
+                )
+            except Exception as e:
+                raise HTTPException(status_code=503, detail="Service unhealthy")
         
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": "InternalServerError",
-                "message": str(exc) if os.getenv("DEBUG") == "true" else "An error occurred"
+        @app.post("/chat", response_model=ChatResponse)
+        async def chat(request: ChatRequest):
+            if not request.message.strip():
+                raise HTTPException(status_code=400, detail="Message cannot be empty")
+            
+            return await process_chat_stateless(
+                message=request.message,
+                history=[msg.dict() for msg in request.history],
+                max_sources=request.max_sources
+            )
+        
+        @app.post("/transcribe", response_model=TranscribeResponse)
+        async def transcribe_audio(audio: UploadFile = File(...)):
+            try:
+                if not audio.content_type.startswith('audio/'):
+                    raise HTTPException(status_code=400, detail="Must be audio file")
+                
+                audio_data = await audio.read()
+                
+                if not audio_data:
+                    raise HTTPException(status_code=400, detail="Empty file")
+                
+                if len(audio_data) > 10 * 1024 * 1024:
+                    raise HTTPException(status_code=400, detail="File too large (max 10MB)")
+                
+                transcript, lang = get_transcription_tool().transcribe(audio_data)
+                
+                if not transcript:
+                    raise HTTPException(status_code=400, detail="Transcription failed")
+                
+                return TranscribeResponse(text=transcript, detected_language=lang)
+                
+            except HTTPException:
+                raise
+            except Exception as e:
+                print(f"Transcription error: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+        
+        @app.get("/metrics")
+        async def metrics():
+            return {
+                "uptime_seconds": time.time() - START_TIME,
+                "memory_usage_mb": get_memory_usage(),
+                "version": VERSION
             }
-        )
-    
-    print(f"Starting server on {SERVER_HOST}:{SERVER_PORT}")
-    
-    # Run with uvicorn
-    config = uvicorn.Config(app, host=SERVER_HOST, port=SERVER_PORT, log_level="info")
-    server = uvicorn.Server(config)
-    await server.serve()
+        
+        @app.exception_handler(Exception)
+        async def global_exception_handler(request: Request, exc: Exception):
+            print(f"Error: {exc}")
+            if os.getenv("DEBUG") == "true":
+                print(traceback.format_exc())
+            
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "error": "InternalServerError",
+                    "message": str(exc) if os.getenv("DEBUG") == "true" else "An error occurred"
+                }
+            )
+        
+        print(f"Server running. Keeping process alive...")
+        
+        # Keep the process alive - Parlant server is already running
+        # The context manager handles cleanup on exit
+        try:
+            while True:
+                await asyncio.sleep(3600)  # Sleep for 1 hour, repeat
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            print("Shutting down gracefully...")
 
 
 if __name__ == "__main__":
