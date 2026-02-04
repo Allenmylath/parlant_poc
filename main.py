@@ -52,49 +52,62 @@ def get_memory_usage() -> float:
 
 @app.on_event("startup")
 async def startup():
-    """Initialize Parlant on startup"""
+    """Initialize Parlant on startup - non-blocking"""
+    print(f"Starting Kerala Police Assistant v{VERSION}...")
+    print(f"Server will bind to {SERVER_HOST}:{SERVER_PORT}")
+    
+    # Start Parlant initialization in background
+    asyncio.create_task(initialize_parlant())
+
+
+async def initialize_parlant():
+    """Initialize Parlant in background"""
     global police_agent, parlant_server
     
-    print(f"Starting Kerala Police Assistant v{VERSION}...")
-    
-    # Create Parlant server (will use its own internal port)
-    # We only need it for the agent, not for serving HTTP
-    parlant_server = p.Server(
-        host="127.0.0.1",  # Internal only
-        port=8818,  # Different port for internal use
-        nlp_service=p.NLPServices.openai,
-        session_store='transient',
-        customer_store='transient',
-        variable_store='transient',
-    )
-    
-    await parlant_server.ready.wait()
-    print("Parlant initialized")
-    
-    # Create agent
-    agents = await parlant_server.list_agents()
-    if agents:
-        police_agent = agents[0]
-    else:
-        police_agent = await parlant_server.create_agent(
-            name="Kerala Police Assistant",
-            description="AI assistant for Kerala Police"
+    try:
+        print("Initializing Parlant...")
+        
+        # Create Parlant server (internal only)
+        parlant_server = p.Server(
+            host="127.0.0.1",
+            port=8818,
+            nlp_service=p.NLPServices.openai,
+            session_store='transient',
+            customer_store='transient',
+            variable_store='transient',
         )
         
-        await police_agent.add_guideline(
-            condition="always",
-            action="Use search_police_website tool. Be helpful."
-        )
+        await parlant_server.ready.wait()
+        print("Parlant server ready")
         
-        await police_agent.add_guideline(
-            condition="user message is not in English",
-            action="Use translate_to_english tool first."
-        )
+        # Create agent
+        agents = await parlant_server.list_agents()
+        if agents:
+            police_agent = agents[0]
+        else:
+            police_agent = await parlant_server.create_agent(
+                name="Kerala Police Assistant",
+                description="AI assistant for Kerala Police"
+            )
+            
+            await police_agent.add_guideline(
+                condition="always",
+                action="Use search_police_website tool. Be helpful."
+            )
+            
+            await police_agent.add_guideline(
+                condition="user message is not in English",
+                action="Use translate_to_english tool first."
+            )
+            
+            await police_agent.add_tool(ParlantRAGTool())
+            await police_agent.add_tool(ParlantTranslationTool())
         
-        await police_agent.add_tool(ParlantRAGTool())
-        await police_agent.add_tool(ParlantTranslationTool())
-    
-    print(f"Agent ready with {len(await police_agent.list_tools())} tools")
+        print(f"Agent ready with {len(await police_agent.list_tools())} tools")
+    except Exception as e:
+        print(f"Failed to initialize Parlant: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 async def process_chat(message: str, history: List[Dict], max_sources: int = 5) -> ChatResponse:
