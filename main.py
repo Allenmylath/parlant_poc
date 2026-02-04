@@ -90,13 +90,7 @@ async def main():
             description="Official document issued by police certifying that a person has no criminal record or pending cases",
             synonyms=["PCC", "police clearance", "clearance certificate", "character certificate", "no objection certificate"]
         )
-        
-        # HIGH CRITICALITY: Reject off-topic questions
-        await agent.create_guideline(
-            condition="User asks about celebrities, political personalities, sports, entertainment, general knowledge, or any topic unrelated to police services",
-            action="Politely inform the user: 'I am a Police Assistant Bot designed to help with information from the Kerala Police website only. I can answer questions about police services, procedures, certificates, complaints, and other police-related matters. Please ask me about police services.'",
-            criticality=p.Criticality.HIGH
-        )
+
         
         # Guideline 1: Search police website for questions
         await agent.create_guideline(
