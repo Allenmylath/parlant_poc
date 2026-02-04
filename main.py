@@ -7,6 +7,8 @@ import traceback
 import parlant.sdk as p
 from fastapi import HTTPException, UploadFile, File, Request
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 
 from models import (
     ChatRequest, ChatResponse, Source, TokenUsage,
@@ -24,31 +26,18 @@ START_TIME = time.time()
 SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = int(os.getenv("PORT", "8000"))
 
-# NLP Service configuration
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-NLP_SERVICE = p.NLPServices.openai
-
-# Global Parlant server instance
-parlant_server = None
-police_agent = None
+# Global Parlant server and agent
+parlant_server: p.Server = None
+police_agent: p.Agent = None
 
 
 def get_memory_usage() -> float:
     """Get current memory usage in MB"""
     try:
         process = psutil.Process()
-        return process.memory_info().rss / 1024 / 1024  # Convert to MB
+        return process.memory_info().rss / 1024 / 1024
     except:
         return 0.0
-
-
-async def configure_container(container: p.Container) -> p.Container:
-    """Configure Parlant container - no auth, no persistent sessions"""
-    
-    # No authentication - accept all requests
-    container[p.AuthorizationPolicy] = p.PassThroughAuthorizationPolicy()
-    
-    return container
 
 
 async def setup_agent(server: p.Server) -> p.Agent:
@@ -64,73 +53,29 @@ async def setup_agent(server: p.Server) -> p.Agent:
     # Create new agent
     agent = await server.create_agent(
         name="Kerala Police Assistant",
-        description="AI assistant for Kerala Police website helping citizens with information about police services, procedures, and emergency contacts"
+        description="AI assistant for Kerala Police website"
     )
     
-    # Add guidelines for agent behavior
+    # Add guidelines
     await agent.add_guideline(
         condition="always",
-        action="""You are a helpful AI assistant for the Kerala Police website in India.
-
-Your responsibilities:
-- Answer questions about police services, procedures, and information
-- Use the RAG search tool to find relevant information from the police website
-- Be concise, clear, and helpful
-- Cite source URLs naturally in your responses
-- Be professional yet friendly and approachable
-- Focus on helping citizens access police services efficiently
-
-Guidelines:
-- Provide actionable information when possible
-- If a question requires visiting a police station or calling, mention that clearly
-- For emergency situations, always mention emergency helplines (100, 112)
-- Be sensitive to potentially stressful situations citizens may be facing
-- If you don't have relevant information from the website, say so politely
-
-Always use the search_police_website tool to find relevant information before answering."""
+        action="Use search_police_website tool to find information. Be concise and helpful."
     )
     
-    # Add guideline for using translation
     await agent.add_guideline(
         condition="user message is not in English",
-        action="Use the translate_to_english tool first to understand the user's message, then respond in English. The frontend will handle translation back to the user's language."
+        action="Use translate_to_english tool first."
     )
     
-    # Add guideline for citing sources
-    await agent.add_guideline(
-        condition="you find relevant information from search results",
-        action="Cite the source URLs naturally in your response, for example: 'According to the [service page](url), ...' This helps users find more detailed information."
-    )
-    
-    print(f"Agent '{agent.name}' created and configured")
-    return agent
-
-
-async def initialize_parlant() -> tuple:
-    """Initialize Parlant server and agent"""
-    
-    # Create Parlant server - it auto-initializes
-    server = p.Server(
-        host=SERVER_HOST,
-        port=SERVER_PORT,
-        nlp_service=NLP_SERVICE,
-        configure_container=configure_container,
-    )
-    
-    # Server is ready, now set up the agent
-    agent = await setup_agent(server)
-    
-    # Register tools with the agent
+    # Register tools
     rag_tool = ParlantRAGTool()
     translation_tool = ParlantTranslationTool()
     
     await agent.add_tool(rag_tool)
     await agent.add_tool(translation_tool)
     
-    print(f"Parlant server initialized on {SERVER_HOST}:{SERVER_PORT}")
-    print(f"Agent tools registered: {len(await agent.list_tools())}")
-    
-    return server, agent
+    print(f"Agent created with {len(await agent.list_tools())} tools")
+    return agent
 
 
 async def process_chat_stateless(
@@ -138,18 +83,7 @@ async def process_chat_stateless(
     history: List[Dict],
     max_sources: int = 5
 ) -> ChatResponse:
-    """
-    Process chat using Parlant agent with minimal session handling
-    Session is created per request and discarded after response
-    
-    Args:
-        message: User's current message
-        history: Conversation history from Streamlit (we don't use this, Parlant manages context)
-        max_sources: Maximum number of sources to return
-        
-    Returns:
-        ChatResponse with answer and sources
-    """
+    """Process chat using Parlant agent"""
     start_time = time.time()
     
     global police_agent
@@ -158,42 +92,35 @@ async def process_chat_stateless(
         raise HTTPException(status_code=503, detail="Agent not initialized")
     
     try:
-        # Create a temporary session for this single request
-        # Using timestamp ensures unique session per request
+        # Create temporary session
         session_id = f"req_{int(time.time() * 1000000)}"
         customer_id = "web_user"
         
-        # Create session
         session = await police_agent.create_session(
             customer_id=customer_id,
             session_id=session_id
         )
         
-        # Send message to agent
+        # Send message
         await session.send_message(message)
-        
-        # Wait for agent to complete processing
         await session.wait_for_completion()
         
-        # Get all events from this session
+        # Get events
         events = await session.get_events()
         
-        # Extract response and tool results
+        # Extract response
         assistant_message = ""
         sources = []
         detected_language = "en"
         
         for event in events:
-            # Get the assistant's response message
             if hasattr(event, 'message') and event.message:
                 if hasattr(event.message, 'content') and event.message.content:
                     assistant_message = event.message.content
             
-            # Extract tool results for sources
             if hasattr(event, 'tool_result') and event.tool_result:
                 result = event.tool_result
                 
-                # Get RAG search results
                 if result.tool_name == "search_police_website":
                     try:
                         import json
@@ -208,26 +135,24 @@ async def process_chat_stateless(
                     except Exception as e:
                         print(f"Error parsing RAG results: {e}")
                 
-                # Get detected language from translation
                 if result.tool_name == "translate_to_english":
                     try:
                         import json
                         data = json.loads(result.output) if isinstance(result.output, str) else result.output
                         detected_language = data.get("language", "en")
                     except Exception as e:
-                        print(f"Error parsing translation results: {e}")
+                        print(f"Error parsing translation: {e}")
         
-        # Clean up: delete the temporary session
+        # Clean up
         try:
             await session.delete()
         except:
-            pass  # Ignore deletion errors
-        
+            pass
         
         processing_time = round((time.time() - start_time) * 1000, 2)
         
         return ChatResponse(
-            response=assistant_message or "I'm sorry, I couldn't generate a response.",
+            response=assistant_message or "I couldn't generate a response.",
             sources=sources,
             tokens_used=TokenUsage(input_tokens=0, output_tokens=0, total_tokens=0),
             detected_language=detected_language,
@@ -237,37 +162,36 @@ async def process_chat_stateless(
     except Exception as e:
         print(f"Chat processing error: {e}")
         print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Chat processing failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
 
 
-# Initialize FastAPI app from Parlant server
-async def startup():
-    """Startup event handler"""
-    global parlant_server, police_agent
-    parlant_server, police_agent = await initialize_parlant()
-
-
-async def shutdown():
-    """Shutdown event handler"""
-    global parlant_server
-    if parlant_server:
-        await parlant_server.close()
-
-
-# Main function to run the server
 async def main():
-    """Initialize and run the Parlant server"""
-    
+    """Initialize and run Parlant server"""
     global parlant_server, police_agent
     
-    # Initialize Parlant
-    parlant_server, police_agent = await initialize_parlant()
+    print(f"Starting Kerala Police Assistant v{VERSION}...")
     
-    # Get the FastAPI app from Parlant server
-    app = parlant_server.app
+    # Create Parlant server with transient stores
+    parlant_server = p.Server(
+        host=SERVER_HOST,
+        port=SERVER_PORT,
+        nlp_service=p.NLPServices.openai,
+        session_store='transient',
+        customer_store='transient',
+        variable_store='transient',
+    )
     
-    # Add CORS middleware
-    from fastapi.middleware.cors import CORSMiddleware
+    # Wait for ready
+    await parlant_server.ready.wait()
+    print("Parlant server ready")
+    
+    # Setup agent
+    police_agent = await setup_agent(parlant_server)
+    
+    # Get FastAPI app
+    app = parlant_server.api
+    
+    # Add CORS
     app.add_middleware(
         CORSMiddleware,
         allow_origins=os.getenv("ALLOWED_ORIGINS", "*").split(","),
@@ -276,10 +200,9 @@ async def main():
         allow_headers=["*"],
     )
     
-    # Add custom endpoints
+    # Custom endpoints
     @app.get("/", response_model=HealthResponse)
     async def root():
-        """Root endpoint - basic health check"""
         return HealthResponse(
             status="running",
             version=VERSION,
@@ -294,41 +217,29 @@ async def main():
     
     @app.get("/health", response_model=HealthResponse)
     async def health():
-        """Health check endpoint"""
         try:
             services = {
                 "openai": bool(os.getenv("OPENAI_API_KEY")),
                 "sarvam": bool(os.getenv("SARVAM_API_KEY"))
             }
             
-            # Test Qdrant connectivity
             try:
-                rag_tool = get_rag_tool()
-                services["qdrant"] = rag_tool.health_check()
-            except Exception as e:
-                print(f"Qdrant health check error: {e}")
+                services["qdrant"] = get_rag_tool().health_check()
+            except:
                 services["qdrant"] = False
             
-            all_healthy = all(services.values())
-            status = "healthy" if all_healthy else "degraded"
-            
             return HealthResponse(
-                status=status,
+                status="healthy" if all(services.values()) else "degraded",
                 version=VERSION,
                 services=services,
                 uptime_seconds=time.time() - START_TIME,
                 memory_usage_mb=get_memory_usage()
             )
         except Exception as e:
-            print(f"Health check failed: {e}")
             raise HTTPException(status_code=503, detail="Service unhealthy")
     
     @app.post("/chat", response_model=ChatResponse)
     async def chat(request: ChatRequest):
-        """
-        Main chat endpoint - stateless
-        Receives history from Streamlit, processes with Parlant, returns response
-        """
         if not request.message.strip():
             raise HTTPException(status_code=400, detail="Message cannot be empty")
         
@@ -340,73 +251,57 @@ async def main():
     
     @app.post("/transcribe", response_model=TranscribeResponse)
     async def transcribe_audio(audio: UploadFile = File(...)):
-        """Transcribe audio file to text"""
         try:
             if not audio.content_type.startswith('audio/'):
-                raise HTTPException(status_code=400, detail="File must be an audio file")
+                raise HTTPException(status_code=400, detail="Must be audio file")
             
             audio_data = await audio.read()
             
-            if len(audio_data) == 0:
-                raise HTTPException(status_code=400, detail="Audio file is empty")
+            if not audio_data:
+                raise HTTPException(status_code=400, detail="Empty file")
             
-            if len(audio_data) > 10 * 1024 * 1024:  # 10MB limit
-                raise HTTPException(status_code=400, detail="Audio file too large (max 10MB)")
+            if len(audio_data) > 10 * 1024 * 1024:
+                raise HTTPException(status_code=400, detail="File too large (max 10MB)")
             
-            transcription_tool = get_transcription_tool()
-            transcript, detected_lang = transcription_tool.transcribe(audio_data)
+            transcript, lang = get_transcription_tool().transcribe(audio_data)
             
             if not transcript:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Transcription failed - could not extract text from audio"
-                )
+                raise HTTPException(status_code=400, detail="Transcription failed")
             
-            return TranscribeResponse(
-                text=transcript,
-                detected_language=detected_lang
-            )
+            return TranscribeResponse(text=transcript, detected_language=lang)
             
         except HTTPException:
             raise
         except Exception as e:
             print(f"Transcription error: {e}")
-            print(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=f"Transcription failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
     
     @app.get("/metrics")
     async def metrics():
-        """Basic metrics endpoint for monitoring"""
         return {
             "uptime_seconds": time.time() - START_TIME,
             "memory_usage_mb": get_memory_usage(),
             "version": VERSION
         }
     
-    # Exception handler
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
-        """Global exception handler"""
-        error_detail = traceback.format_exc() if os.getenv("DEBUG") == "true" else str(exc)
-        print(f"Error: {error_detail}")
+        print(f"Error: {exc}")
+        if os.getenv("DEBUG") == "true":
+            print(traceback.format_exc())
         
         return JSONResponse(
             status_code=500,
             content={
                 "error": "InternalServerError",
-                "message": "An unexpected error occurred",
-                "detail": str(exc) if os.getenv("DEBUG") == "true" else None
+                "message": str(exc) if os.getenv("DEBUG") == "true" else "An error occurred"
             }
         )
     
-    # Start the server using uvicorn
-    import uvicorn
-    config = uvicorn.Config(
-        app,
-        host=SERVER_HOST,
-        port=SERVER_PORT,
-        log_level="info"
-    )
+    print(f"Starting server on {SERVER_HOST}:{SERVER_PORT}")
+    
+    # Run with uvicorn
+    config = uvicorn.Config(app, host=SERVER_HOST, port=SERVER_PORT, log_level="info")
     server = uvicorn.Server(config)
     await server.serve()
 
