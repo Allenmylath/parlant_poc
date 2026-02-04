@@ -81,18 +81,37 @@ async def main():
     async with p.Server(nlp_service=NLPServices.openai) as server:
         agent = await server.create_agent(
             name="PoliceAssistant",
-            description="Helpful assistant for Kerala Police website queries"
+            description="Helpful assistant for Kerala Police website queries in English and Malayalam"
         )
         
+        # Add glossary term for PCC
+        await agent.create_term(
+            name="Police Clearance Certificate",
+            description="Official document issued by police certifying that a person has no criminal record or pending cases",
+            synonyms=["PCC", "police clearance", "clearance certificate", "character certificate", "no objection certificate"]
+        )
+        
+        # Guideline 1: Search police website for questions
         await agent.create_guideline(
             condition="User asks any question about police services, procedures, or information",
             action="Search the police website using the search_police_website tool and provide a helpful answer based on the retrieved information. Always cite the source URLs in your response.",
             tools=[search_police_website]
         )
         
+        # Guideline 2: Reply in Malayalam if user asks in Malayalam
+        await agent.create_guideline(
+            condition="User asks a question in Malayalam language",
+            action="Respond to the user in Malayalam. Use the search_police_website tool to get information, then translate your entire response to Malayalam while keeping the source URLs intact.",
+            tools=[search_police_website]
+        )
+        
         print(f"🚔 Police Assistant Agent running at http://localhost:8800")
         print(f"Agent ID: {agent.id}")
-        print("\nThe agent will automatically search the police website to answer your questions.")
+        print("\nThe agent will:")
+        print("- Automatically search the police website to answer your questions")
+        print("- Reply in Malayalam if you ask in Malayalam")
+        print("- Reply in English if you ask in English")
+        print("- Understand PCC and related terms")
 
 if __name__ == "__main__":
     import asyncio
