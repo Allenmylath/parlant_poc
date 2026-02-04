@@ -91,6 +91,13 @@ async def main():
             synonyms=["PCC", "police clearance", "clearance certificate", "character certificate", "no objection certificate"]
         )
         
+        # HIGH CRITICALITY: Reject off-topic questions
+        await agent.create_guideline(
+            condition="User asks about celebrities, political personalities, sports, entertainment, general knowledge, or any topic unrelated to police services",
+            action="Politely inform the user: 'I am a Police Assistant Bot designed to help with information from the Kerala Police website only. I can answer questions about police services, procedures, certificates, complaints, and other police-related matters. Please ask me about police services.'",
+            criticality=p.Criticality.HIGH
+        )
+        
         # Guideline 1: Search police website for questions
         await agent.create_guideline(
             condition="User asks any question about police services, procedures, or information",
@@ -112,6 +119,7 @@ async def main():
         print("- Reply in Malayalam if you ask in Malayalam")
         print("- Reply in English if you ask in English")
         print("- Understand PCC and related terms")
+        print("- Politely decline questions about celebrities, politics, and off-topic queries")
 
 if __name__ == "__main__":
     import asyncio
