@@ -6,6 +6,8 @@ from functools import lru_cache
 import httpx
 import json
 import time
+import parlant.sdk as p
+
 
 class RAGTool:
     """Tool for searching police website content using RAG"""
@@ -196,6 +198,123 @@ class TranscriptionTool:
         except Exception as e:
             print(f"Transcription error: {e}")
             return "", "unknown"
+
+
+# ============================================================================
+# PARLANT TOOL WRAPPERS
+# ============================================================================
+
+class ParlantRAGTool(p.Tool):
+    """Parlant Tool wrapper for RAG search"""
+    
+    def __init__(self):
+        super().__init__(
+            name="search_police_website",
+            description="Search the Kerala Police website for relevant information about police services, procedures, emergency contacts, and other official information. Use this tool to find accurate answers from the official website."
+        )
+        self.rag = get_rag_tool()
+    
+    async def call(self, query: str, top_k: int = 5) -> str:
+        """
+        Search the police website
+        
+        Args:
+            query: Search query in English
+            top_k: Number of results to return (default: 5)
+            
+        Returns:
+            JSON string with search results
+        """
+        try:
+            results = self.rag.search(query, top_k=top_k)
+            
+            if not results:
+                return json.dumps({
+                    "status": "no_results",
+                    "message": "No relevant information found in the police website database."
+                })
+            
+            # Format results for the agent
+            formatted = []
+            for r in results:
+                formatted.append({
+                    "content": r["content"],
+                    "url": r["url"],
+                    "score": r["score"]
+                })
+            
+            return json.dumps(formatted, ensure_ascii=False)
+            
+        except Exception as e:
+            print(f"Parlant RAG tool error: {e}")
+            return json.dumps({
+                "status": "error",
+                "message": f"Search failed: {str(e)}"
+            })
+    
+    def get_parameters(self) -> Dict:
+        """Define tool parameters for Parlant"""
+        return {
+            "query": {
+                "type": "string",
+                "description": "The search query in English",
+                "required": True
+            },
+            "top_k": {
+                "type": "integer",
+                "description": "Number of results to return (1-10)",
+                "required": False,
+                "default": 5
+            }
+        }
+
+
+class ParlantTranslationTool(p.Tool):
+    """Parlant Tool wrapper for translation"""
+    
+    def __init__(self):
+        super().__init__(
+            name="translate_to_english",
+            description="Translate user's message to English and detect the source language. Use this when the user's message appears to be in a language other than English (like Malayalam, Hindi, Tamil, etc.)"
+        )
+        self.translator = get_translation_tool()
+    
+    async def call(self, text: str) -> str:
+        """
+        Translate text to English
+        
+        Args:
+            text: Text in any language
+            
+        Returns:
+            JSON string with translation and detected language
+        """
+        try:
+            translated, language = self.translator.translate_to_english(text)
+            
+            return json.dumps({
+                "translated": translated,
+                "language": language,
+                "original": text
+            }, ensure_ascii=False)
+            
+        except Exception as e:
+            print(f"Parlant translation tool error: {e}")
+            return json.dumps({
+                "translated": text,
+                "language": "unknown",
+                "error": str(e)
+            })
+    
+    def get_parameters(self) -> Dict:
+        """Define tool parameters for Parlant"""
+        return {
+            "text": {
+                "type": "string",
+                "description": "Text to translate to English",
+                "required": True
+            }
+        }
 
 
 # Singleton instances (cached)
