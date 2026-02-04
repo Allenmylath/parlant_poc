@@ -223,11 +223,28 @@ async def chat(request: ChatRequest):
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
     
-    return await process_chat(
-        message=request.message,
-        history=[msg.dict() for msg in request.history],
-        max_sources=request.max_sources
-    )
+    # Check if agent is ready
+    if police_agent is None:
+        print("WARNING: Chat request received but agent not initialized yet")
+        raise HTTPException(
+            status_code=503, 
+            detail="Agent is still initializing. Please wait a moment and try again."
+        )
+    
+    try:
+        return await process_chat(
+            message=request.message,
+            history=[msg.dict() for msg in request.history],
+            max_sources=request.max_sources
+        )
+    except Exception as e:
+        print(f"Chat endpoint error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Chat processing failed: {str(e)}"
+        )
 
 
 @app.post("/transcribe", response_model=TranscribeResponse)
@@ -259,6 +276,16 @@ async def metrics():
         "uptime_seconds": time.time() - START_TIME,
         "memory_usage_mb": get_memory_usage(),
         "version": VERSION
+    }
+
+
+@app.get("/agent-status")
+async def agent_status():
+    """Debug endpoint to check agent initialization status"""
+    return {
+        "agent_initialized": police_agent is not None,
+        "parlant_server_initialized": parlant_server is not None,
+        "uptime_seconds": time.time() - START_TIME,
     }
 
 
