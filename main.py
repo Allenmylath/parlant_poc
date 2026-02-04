@@ -60,6 +60,19 @@ async def startup():
     asyncio.create_task(initialize_parlant())
 
 
+@app.on_event("shutdown")
+async def shutdown():
+    """Cleanup Parlant on shutdown"""
+    global parlant_server
+    if parlant_server:
+        try:
+            print("Shutting down Parlant server...")
+            await parlant_server.__aexit__(None, None, None)
+            print("✓ Parlant server shut down")
+        except Exception as e:
+            print(f"Error during Parlant shutdown: {e}")
+
+
 async def initialize_parlant():
     """Initialize Parlant in background"""
     global police_agent, parlant_server
@@ -69,8 +82,9 @@ async def initialize_parlant():
         print("PARLANT INITIALIZATION STARTED")
         print("=" * 60)
         
-        # Create Parlant server (internal only)
-        print("Step 1: Creating Parlant server...")
+        print("Step 1: Creating Parlant server with async context manager...")
+        
+        # Create server using async context manager
         parlant_server = p.Server(
             host="127.0.0.1",
             port=8818,
@@ -79,7 +93,10 @@ async def initialize_parlant():
             customer_store='transient',
             variable_store='transient',
         )
-        print("✓ Parlant server object created")
+        
+        # Enter the context manager to initialize _creation_progress_task_id
+        await parlant_server.__aenter__()
+        print("✓ Parlant server context entered and initialized")
         
         print("Step 2: Waiting for server to be ready (60s timeout)...")
         try:
@@ -87,8 +104,7 @@ async def initialize_parlant():
             print("✓ Parlant server is ready")
         except asyncio.TimeoutError:
             print("⚠ Parlant server ready timeout - attempting to continue anyway...")
-            # Try to proceed even if ready signal times out
-            await asyncio.sleep(5)  # Give it a bit more time
+            await asyncio.sleep(5)
         
         # List existing agents
         print("Step 3: Listing existing agents...")
@@ -153,7 +169,6 @@ async def initialize_parlant():
             except Exception as guideline_error:
                 print(f"⚠ GUIDELINE ADDITION FAILED: {guideline_error}")
                 traceback.print_exc()
-                # Continue anyway - agent is created
             
             # Add tools
             print("Step 6: Adding tools...")
@@ -174,7 +189,6 @@ async def initialize_parlant():
             except Exception as tool_error:
                 print(f"⚠ TOOL ADDITION FAILED: {tool_error}")
                 traceback.print_exc()
-                # Continue anyway - agent is created
         
         # Verify tools
         print("Step 7: Verifying agent setup...")
@@ -212,7 +226,13 @@ async def initialize_parlant():
         traceback.print_exc()
         print("=" * 60)
         
-        # Set both to None to indicate failure
+        # Cleanup on failure
+        if parlant_server:
+            try:
+                await parlant_server.__aexit__(None, None, None)
+            except:
+                pass
+        
         police_agent = None
         parlant_server = None
 
