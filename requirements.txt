@@ -1,35 +1,31 @@
-# Web Framework
-fastapi==0.109.0
-uvicorn[standard]==0.27.1
+# Web Framework - Flexible versions to avoid conflicts
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
 
 # Parlant SDK (requires Python 3.10+)
 parlant>=3.1.0
 
 # Data Validation
-pydantic==2.6.1
-pydantic-settings==2.1.0
+pydantic>=2.6.0
+pydantic-settings>=2.1.0
 
 # File Upload
-python-multipart==0.0.9
+python-multipart>=0.0.9
 
 # OpenAI
-openai==1.12.0
+openai>=1.12.0
 
 # Qdrant Vector DB
-qdrant-client==1.7.3
+qdrant-client>=1.7.0
 
 # HTTP Client
-httpx==0.26.0
+httpx>=0.26.0
 
 # Environment Variables
-python-dotenv==1.0.1
+python-dotenv>=1.0.0
 
 # Performance
-gunicorn==21.2.0
+gunicorn>=21.2.0
 
 # Health Checks
-psutil==5.9.8
-
-# Additional dependencies that might be needed
-anyio>=3.7.0
-starlette>=0.36.0
+psutil>=5.9.0
