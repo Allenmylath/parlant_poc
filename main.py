@@ -5,7 +5,6 @@ from typing import List, Dict
 import traceback
 
 import parlant.sdk as p
-from parlant.core.sessions import InMemorySessionStore
 from fastapi import HTTPException, UploadFile, File, Request
 from fastapi.responses import JSONResponse
 
@@ -44,10 +43,7 @@ def get_memory_usage() -> float:
 
 
 async def configure_container(container: p.Container) -> p.Container:
-    """Configure Parlant container - no auth, in-memory session store"""
-    
-    # Use in-memory session store (no MongoDB)
-    container[p.SessionStore] = InMemorySessionStore()
+    """Configure Parlant container - no auth, no persistent sessions"""
     
     # No authentication - accept all requests
     container[p.AuthorizationPolicy] = p.PassThroughAuthorizationPolicy()
@@ -146,11 +142,12 @@ async def process_chat_stateless(
     max_sources: int = 5
 ) -> ChatResponse:
     """
-    Process chat in stateless manner using Parlant
+    Process chat using Parlant agent with minimal session handling
+    Session is created per request and discarded after response
     
     Args:
         message: User's current message
-        history: Conversation history from Streamlit
+        history: Conversation history from Streamlit (we don't use this, Parlant manages context)
         max_sources: Maximum number of sources to return
         
     Returns:
@@ -164,9 +161,10 @@ async def process_chat_stateless(
         raise HTTPException(status_code=503, detail="Agent not initialized")
     
     try:
-        # Create a temporary session for this request
-        session_id = f"temp_{int(time.time() * 1000)}"
-        customer_id = "streamlit_user"
+        # Create a temporary session for this single request
+        # Using timestamp ensures unique session per request
+        session_id = f"req_{int(time.time() * 1000000)}"
+        customer_id = "web_user"
         
         # Create session
         session = await police_agent.create_session(
@@ -174,23 +172,13 @@ async def process_chat_stateless(
             session_id=session_id
         )
         
-        # Add conversation history to session context
-        for msg in history[-10:]:  # Last 10 messages
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            if role == "user":
-                # Don't actually send these as messages, just for context
-                pass
-            elif role == "assistant":
-                pass
+        # Send message to agent
+        await session.send_message(message)
         
-        # Send current message and get response
-        response_event = await session.send_message(message)
-        
-        # Wait for completion
+        # Wait for agent to complete processing
         await session.wait_for_completion()
         
-        # Get the response
+        # Get all events from this session
         events = await session.get_events()
         
         # Extract response and tool results
@@ -199,15 +187,17 @@ async def process_chat_stateless(
         detected_language = "en"
         
         for event in events:
+            # Get the assistant's response message
             if hasattr(event, 'message') and event.message:
-                if hasattr(event.message, 'content'):
+                if hasattr(event.message, 'content') and event.message.content:
                     assistant_message = event.message.content
             
             # Extract tool results for sources
             if hasattr(event, 'tool_result') and event.tool_result:
                 result = event.tool_result
+                
+                # Get RAG search results
                 if result.tool_name == "search_police_website":
-                    # Extract sources from RAG results
                     try:
                         import json
                         data = json.loads(result.output) if isinstance(result.output, str) else result.output
@@ -218,20 +208,24 @@ async def process_chat_stateless(
                                     url=item.get("url", ""),
                                     score=item.get("score", 0.0)
                                 ))
-                    except:
-                        pass
+                    except Exception as e:
+                        print(f"Error parsing RAG results: {e}")
                 
+                # Get detected language from translation
                 if result.tool_name == "translate_to_english":
-                    # Extract detected language
                     try:
                         import json
                         data = json.loads(result.output) if isinstance(result.output, str) else result.output
                         detected_language = data.get("language", "en")
-                    except:
-                        pass
+                    except Exception as e:
+                        print(f"Error parsing translation results: {e}")
         
-        # Delete temporary session
-        await session.delete()
+        # Clean up: delete the temporary session
+        try:
+            await session.delete()
+        except:
+            pass  # Ignore deletion errors
+        
         
         processing_time = round((time.time() - start_time) * 1000, 2)
         
@@ -408,8 +402,16 @@ async def main():
             }
         )
     
-    # Start the server
-    await parlant_server.serve()
+    # Start the server using uvicorn
+    import uvicorn
+    config = uvicorn.Config(
+        app,
+        host=SERVER_HOST,
+        port=SERVER_PORT,
+        log_level="info"
+    )
+    server = uvicorn.Server(config)
+    await server.serve()
 
 
 if __name__ == "__main__":
