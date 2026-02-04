@@ -109,18 +109,15 @@ Always use the search_police_website tool to find relevant information before an
 async def initialize_parlant() -> tuple:
     """Initialize Parlant server and agent"""
     
-    # Create Parlant server with in-memory storage (no MongoDB)
+    # Create Parlant server - it auto-initializes
     server = p.Server(
         host=SERVER_HOST,
         port=SERVER_PORT,
         nlp_service=NLP_SERVICE,
         configure_container=configure_container,
-        # No MongoDB configuration - using in-memory store
     )
     
-    await server.initialize()
-    
-    # Set up the agent
+    # Server is ready, now set up the agent
     agent = await setup_agent(server)
     
     # Register tools with the agent
