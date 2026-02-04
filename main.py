@@ -32,7 +32,6 @@ app = FastAPI(title="Kerala Police Assistant")
 # Global agent
 police_agent: p.Agent = None
 parlant_server: p.Server = None
-parlant_session_manager = None
 
 # Add CORS
 app.add_middleware(
@@ -65,11 +64,16 @@ async def startup():
 async def shutdown():
     """Cleanup Parlant on shutdown"""
     print("Shutting down application...")
+    if parlant_server:
+        try:
+            await parlant_server.__aexit__(None, None, None)
+        except:
+            pass
 
 
 async def initialize_parlant():
     """Initialize Parlant in background using proper async context manager"""
-    global police_agent, parlant_server, parlant_session_manager
+    global police_agent, parlant_server
     
     try:
         print("=" * 60)
@@ -139,15 +143,8 @@ async def initialize_parlant():
             print(f"⚠ GUIDELINE ADDITION FAILED: {guideline_error}")
             traceback.print_exc()
         
-        # Note: In Parlant 3.x, tools are registered via @p.tool decorator
-        # We'll handle tools through the SDK's tool system
         print("Step 4: Tools registered via decorators")
         print("✓ RAG and Translation tools available")
-        
-        # Create a session manager for handling conversations
-        print("Step 5: Setting up session management...")
-        parlant_session_manager = {}  # Simple in-memory session tracker
-        print("✓ Session manager ready")
         
         print("=" * 60)
         print("PARLANT INITIALIZATION COMPLETE ✓")
@@ -198,16 +195,15 @@ async def process_chat(message: str, history: List[Dict], max_sources: int = 5) 
         print(f"Processing message for customer: {customer_id}")
         print(f"Message: {message[:100]}...")
         
-        # In Parlant 3.x, we interact with the agent through the server
-        # Create a customer if needed
+        # Create a customer through the SERVER (not the agent)
         try:
             customer = await parlant_server.create_customer(customer_id=customer_id)
             print(f"✓ Customer created: {customer_id}")
         except Exception as e:
-            print(f"Customer may already exist or creation failed: {e}")
-            # Continue anyway, customer might already exist
+            print(f"Customer creation note: {e}")
+            # Customer might already exist, that's okay
         
-        # Create a session for this conversation
+        # Create a session through the SERVER with the agent ID
         try:
             session = await parlant_server.create_session(
                 customer_id=customer_id,
@@ -219,7 +215,7 @@ async def process_chat(message: str, history: List[Dict], max_sources: int = 5) 
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"Failed to create session: {str(e)}")
         
-        # Send the message
+        # Send the message through the session
         try:
             await session.send_message(message)
             print(f"✓ Message sent")
@@ -264,36 +260,39 @@ async def process_chat(message: str, history: List[Dict], max_sources: int = 5) 
             # Check for tool results
             if hasattr(event, 'tool_result') and event.tool_result:
                 result = event.tool_result
-                print(f"  - Tool result from: {result.tool_name if hasattr(result, 'tool_name') else 'unknown'}")
+                tool_name = result.tool_name if hasattr(result, 'tool_name') else 'unknown'
+                print(f"  - Tool result from: {tool_name}")
                 
                 # Extract RAG sources
-                if hasattr(result, 'tool_name') and result.tool_name == "search_police_website":
+                if tool_name == "search_police_website":
                     try:
                         import json
-                        data = result.data if hasattr(result, 'data') else result.output
+                        data = result.data if hasattr(result, 'data') else (result.output if hasattr(result, 'output') else None)
                         if isinstance(data, str):
                             data = json.loads(data)
                         
                         if isinstance(data, list):
                             for item in data[:max_sources]:
-                                sources.append(Source(
-                                    content=item.get("content", "")[:300],
-                                    url=item.get("url", ""),
-                                    score=item.get("score", 0.0)
-                                ))
+                                if isinstance(item, dict):
+                                    sources.append(Source(
+                                        content=item.get("content", "")[:300],
+                                        url=item.get("url", ""),
+                                        score=item.get("score", 0.0)
+                                    ))
                             print(f"  - Extracted {len(sources)} sources")
                     except Exception as e:
                         print(f"  - Failed to parse RAG results: {e}")
                 
                 # Extract language detection
-                if hasattr(result, 'tool_name') and result.tool_name == "translate_to_english":
+                if tool_name == "translate_to_english":
                     try:
                         import json
-                        data = result.data if hasattr(result, 'data') else result.output
+                        data = result.data if hasattr(result, 'data') else (result.output if hasattr(result, 'output') else None)
                         if isinstance(data, str):
                             data = json.loads(data)
-                        detected_language = data.get("language", "en")
-                        print(f"  - Detected language: {detected_language}")
+                        if isinstance(data, dict):
+                            detected_language = data.get("language", "en")
+                            print(f"  - Detected language: {detected_language}")
                     except Exception as e:
                         print(f"  - Failed to parse translation: {e}")
         
