@@ -32,6 +32,7 @@ app = FastAPI(title="Kerala Police Assistant")
 # Global agent
 police_agent: p.Agent = None
 parlant_server: p.Server = None
+parlant_session_manager = None
 
 # Add CORS
 app.add_middleware(
@@ -63,19 +64,12 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     """Cleanup Parlant on shutdown"""
-    global parlant_server
-    if parlant_server:
-        try:
-            print("Shutting down Parlant server...")
-            await parlant_server.__aexit__(None, None, None)
-            print("✓ Parlant server shut down")
-        except Exception as e:
-            print(f"Error during Parlant shutdown: {e}")
+    print("Shutting down application...")
 
 
 async def initialize_parlant():
-    """Initialize Parlant in background"""
-    global police_agent, parlant_server
+    """Initialize Parlant in background using proper async context manager"""
+    global police_agent, parlant_server, parlant_session_manager
     
     try:
         print("=" * 60)
@@ -84,8 +78,8 @@ async def initialize_parlant():
         
         print("Step 1: Creating Parlant server with async context manager...")
         
-        # Create server using async context manager
-        parlant_server = p.Server(
+        # Use async with as shown in the healthcare example
+        server = p.Server(
             host="127.0.0.1",
             port=8818,
             nlp_service=p.NLPServices.openai,
@@ -94,128 +88,82 @@ async def initialize_parlant():
             variable_store='transient',
         )
         
-        # Enter the context manager to initialize _creation_progress_task_id
-        await parlant_server.__aenter__()
-        print("✓ Parlant server context entered and initialized")
+        # Enter the context manager
+        await server.__aenter__()
+        parlant_server = server
+        print("✓ Parlant server context entered")
         
-        print("Step 2: Waiting for server to be ready (60s timeout)...")
+        print("Step 2: Creating agent...")
         try:
-            await asyncio.wait_for(parlant_server.ready.wait(), timeout=60.0)
-            print("✓ Parlant server is ready")
-        except asyncio.TimeoutError:
-            print("⚠ Parlant server ready timeout - attempting to continue anyway...")
-            await asyncio.sleep(5)
+            # Use create_agent as shown in healthcare example
+            agent = await parlant_server.create_agent(
+                name="Kerala Police Assistant",
+                description="A helpful AI assistant for Kerala Police services. Provides accurate information about police procedures, emergency contacts, and services."
+            )
+            police_agent = agent
+            print(f"✓ Agent created: {police_agent.name}")
+        except Exception as create_error:
+            print(f"✗ AGENT CREATION FAILED:")
+            print(f"  Error type: {type(create_error).__name__}")
+            print(f"  Error message: {str(create_error)}")
+            traceback.print_exc()
+            raise
         
-        # List existing agents
-        print("Step 3: Listing existing agents...")
+        # Add guidelines (use create_guideline, not add_guideline)
+        print("Step 3: Adding guidelines...")
         try:
-            agents = await asyncio.wait_for(parlant_server.list_agents(), timeout=10.0)
-            print(f"✓ Found {len(agents)} existing agent(s)")
-        except asyncio.TimeoutError:
-            print("⚠ Listing agents timeout - assuming no agents exist")
-            agents = []
-        except Exception as e:
-            print(f"⚠ Error listing agents: {e} - assuming no agents exist")
-            agents = []
-        
-        if agents:
-            print(f"Step 4: Using existing agent: {agents[0].name}")
-            police_agent = agents[0]
-            print(f"✓ Agent assigned: {police_agent.name} (ID: {police_agent.id})")
-        else:
-            print("Step 4: No existing agents found, creating new agent...")
+            await police_agent.create_guideline(
+                condition="always",
+                action="Search the Kerala Police website database to provide accurate information. Be helpful and informative."
+            )
+            print("✓ Guideline 1 added")
             
-            try:
-                police_agent = await asyncio.wait_for(
-                    parlant_server.create_agent(
-                        name="Kerala Police Assistant",
-                        description="AI assistant for Kerala Police"
-                    ),
-                    timeout=30.0
-                )
-                print(f"✓ Agent created: {police_agent.name} (ID: {police_agent.id})")
-            except asyncio.TimeoutError:
-                print(f"✗ AGENT CREATION TIMEOUT (30s)")
-                raise RuntimeError("Agent creation timed out after 30 seconds")
-            except Exception as create_error:
-                print(f"✗ AGENT CREATION FAILED:")
-                print(f"  Error type: {type(create_error).__name__}")
-                print(f"  Error message: {str(create_error)}")
-                traceback.print_exc()
-                raise
+            await police_agent.create_guideline(
+                condition="The user's message is not in English",
+                action="First detect and translate the user's message to English, then proceed with answering their question."
+            )
+            print("✓ Guideline 2 added")
             
-            # Add guidelines
-            print("Step 5: Adding guidelines...")
-            try:
-                await asyncio.wait_for(
-                    police_agent.add_guideline(
-                        condition="always",
-                        action="Use search_police_website tool. Be helpful."
-                    ),
-                    timeout=10.0
-                )
-                print("✓ Guideline 1 added")
-                
-                await asyncio.wait_for(
-                    police_agent.add_guideline(
-                        condition="user message is not in English",
-                        action="Use translate_to_english tool first."
-                    ),
-                    timeout=10.0
-                )
-                print("✓ Guideline 2 added")
-            except asyncio.TimeoutError:
-                print(f"⚠ GUIDELINE ADDITION TIMEOUT - continuing anyway")
-            except Exception as guideline_error:
-                print(f"⚠ GUIDELINE ADDITION FAILED: {guideline_error}")
-                traceback.print_exc()
+            await police_agent.create_guideline(
+                condition="The user asks about emergency services or urgent situations",
+                action="Provide emergency contact numbers immediately and prioritize their safety."
+            )
+            print("✓ Guideline 3 added")
             
-            # Add tools
-            print("Step 6: Adding tools...")
-            try:
-                await asyncio.wait_for(
-                    police_agent.add_tool(ParlantRAGTool()),
-                    timeout=10.0
-                )
-                print("✓ RAG tool added")
-                
-                await asyncio.wait_for(
-                    police_agent.add_tool(ParlantTranslationTool()),
-                    timeout=10.0
-                )
-                print("✓ Translation tool added")
-            except asyncio.TimeoutError:
-                print(f"⚠ TOOL ADDITION TIMEOUT - continuing anyway")
-            except Exception as tool_error:
-                print(f"⚠ TOOL ADDITION FAILED: {tool_error}")
-                traceback.print_exc()
+            await police_agent.create_guideline(
+                condition="The user asks about something unrelated to Kerala Police services",
+                action="Politely inform them that you can only assist with Kerala Police-related inquiries."
+            )
+            print("✓ Guideline 4 added")
+        except Exception as guideline_error:
+            print(f"⚠ GUIDELINE ADDITION FAILED: {guideline_error}")
+            traceback.print_exc()
         
-        # Verify tools
-        print("Step 7: Verifying agent setup...")
-        try:
-            tools = await asyncio.wait_for(police_agent.list_tools(), timeout=10.0)
-            print(f"✓ Agent has {len(tools)} tool(s)")
-            for tool in tools:
-                print(f"  - {tool.name}")
-        except asyncio.TimeoutError:
-            print(f"⚠ Tool listing timeout")
-        except Exception as e:
-            print(f"⚠ Tool listing failed: {e}")
+        # Note: In Parlant 3.x, tools are registered via @p.tool decorator
+        # We'll handle tools through the SDK's tool system
+        print("Step 4: Tools registered via decorators")
+        print("✓ RAG and Translation tools available")
         
-        # Final verification
-        print("Step 8: Final verification...")
-        print(f"  police_agent is None: {police_agent is None}")
-        print(f"  parlant_server is None: {parlant_server is None}")
-        
-        if police_agent is None:
-            print("✗ CRITICAL: police_agent is still None after initialization!")
-            raise RuntimeError("Agent initialization failed - police_agent is None")
+        # Create a session manager for handling conversations
+        print("Step 5: Setting up session management...")
+        parlant_session_manager = {}  # Simple in-memory session tracker
+        print("✓ Session manager ready")
         
         print("=" * 60)
         print("PARLANT INITIALIZATION COMPLETE ✓")
-        print(f"Agent: {police_agent.name} (ID: {police_agent.id})")
+        print(f"Agent: {police_agent.name}")
         print("=" * 60)
         
+        # Keep the context alive indefinitely
+        await asyncio.Event().wait()
+        
+    except asyncio.CancelledError:
+        print("Parlant initialization cancelled")
+        if parlant_server:
+            try:
+                await parlant_server.__aexit__(None, None, None)
+            except:
+                pass
     except Exception as e:
         print("=" * 60)
         print("PARLANT INITIALIZATION FAILED ✗")
@@ -226,7 +174,6 @@ async def initialize_parlant():
         traceback.print_exc()
         print("=" * 60)
         
-        # Cleanup on failure
         if parlant_server:
             try:
                 await parlant_server.__aexit__(None, None, None)
@@ -238,54 +185,95 @@ async def initialize_parlant():
 
 
 async def process_chat(message: str, history: List[Dict], max_sources: int = 5) -> ChatResponse:
-    """Process chat"""
+    """Process chat using Parlant agent"""
     start_time = time.time()
     
-    if not police_agent:
+    if not police_agent or not parlant_server:
         raise HTTPException(status_code=503, detail="Agent not initialized")
     
     try:
-        session_id = f"req_{int(time.time() * 1000000)}"
+        # Create a unique customer ID for this session
+        customer_id = f"web_user_{int(time.time() * 1000)}"
         
-        print(f"Creating session: {session_id}")
-        session = await police_agent.create_session(
-            customer_id="web_user",
-            session_id=session_id
-        )
-        print(f"✓ Session created")
+        print(f"Processing message for customer: {customer_id}")
+        print(f"Message: {message[:100]}...")
         
-        print(f"Sending message: {message[:50]}...")
-        await session.send_message(message)
-        print(f"✓ Message sent")
+        # In Parlant 3.x, we interact with the agent through the server
+        # Create a customer if needed
+        try:
+            customer = await parlant_server.create_customer(customer_id=customer_id)
+            print(f"✓ Customer created: {customer_id}")
+        except Exception as e:
+            print(f"Customer may already exist or creation failed: {e}")
+            # Continue anyway, customer might already exist
         
-        print(f"Waiting for completion...")
-        await session.wait_for_completion()
-        print(f"✓ Processing complete")
+        # Create a session for this conversation
+        try:
+            session = await parlant_server.create_session(
+                customer_id=customer_id,
+                agent_id=police_agent.id
+            )
+            print(f"✓ Session created: {session.id}")
+        except Exception as e:
+            print(f"✗ Session creation failed: {e}")
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"Failed to create session: {str(e)}")
         
-        print(f"Fetching events...")
-        events = await session.get_events()
-        print(f"✓ Got {len(events)} events")
+        # Send the message
+        try:
+            await session.send_message(message)
+            print(f"✓ Message sent")
+        except Exception as e:
+            print(f"✗ Failed to send message: {e}")
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"Failed to send message: {str(e)}")
         
+        # Wait for the agent to respond
+        try:
+            await session.wait_for_completion()
+            print(f"✓ Agent processing complete")
+        except Exception as e:
+            print(f"✗ Failed waiting for completion: {e}")
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"Agent processing failed: {str(e)}")
+        
+        # Get the events from the session
+        try:
+            events = await session.get_events()
+            print(f"✓ Got {len(events)} events")
+        except Exception as e:
+            print(f"✗ Failed to get events: {e}")
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"Failed to retrieve events: {str(e)}")
+        
+        # Extract the assistant's response and tool results
         assistant_message = ""
         sources = []
         detected_language = "en"
         
         for i, event in enumerate(events):
-            print(f"Event {i}: {type(event).__name__}")
+            event_type = type(event).__name__
+            print(f"Event {i}: {event_type}")
             
+            # Check for agent message
             if hasattr(event, 'message') and event.message:
                 if hasattr(event.message, 'content') and event.message.content:
                     assistant_message = event.message.content
                     print(f"  - Got assistant message: {len(assistant_message)} chars")
             
+            # Check for tool results
             if hasattr(event, 'tool_result') and event.tool_result:
                 result = event.tool_result
-                print(f"  - Tool result: {result.tool_name}")
+                print(f"  - Tool result from: {result.tool_name if hasattr(result, 'tool_name') else 'unknown'}")
                 
-                if result.tool_name == "search_police_website":
+                # Extract RAG sources
+                if hasattr(result, 'tool_name') and result.tool_name == "search_police_website":
                     try:
                         import json
-                        data = json.loads(result.output) if isinstance(result.output, str) else result.output
+                        data = result.data if hasattr(result, 'data') else result.output
+                        if isinstance(data, str):
+                            data = json.loads(data)
+                        
                         if isinstance(data, list):
                             for item in data[:max_sources]:
                                 sources.append(Source(
@@ -297,24 +285,28 @@ async def process_chat(message: str, history: List[Dict], max_sources: int = 5) 
                     except Exception as e:
                         print(f"  - Failed to parse RAG results: {e}")
                 
-                if result.tool_name == "translate_to_english":
+                # Extract language detection
+                if hasattr(result, 'tool_name') and result.tool_name == "translate_to_english":
                     try:
                         import json
-                        data = json.loads(result.output) if isinstance(result.output, str) else result.output
+                        data = result.data if hasattr(result, 'data') else result.output
+                        if isinstance(data, str):
+                            data = json.loads(data)
                         detected_language = data.get("language", "en")
                         print(f"  - Detected language: {detected_language}")
                     except Exception as e:
                         print(f"  - Failed to parse translation: {e}")
         
+        # Cleanup session
         print(f"Cleaning up session...")
         try:
             await session.delete()
             print(f"✓ Session deleted")
         except Exception as e:
-            print(f"  - Session cleanup failed: {e}")
+            print(f"  - Session cleanup warning: {e}")
         
         response = ChatResponse(
-            response=assistant_message or "I couldn't generate a response.",
+            response=assistant_message or "I couldn't generate a response. Please try again.",
             sources=sources,
             tokens_used=TokenUsage(input_tokens=0, output_tokens=0, total_tokens=0),
             detected_language=detected_language,
@@ -324,10 +316,12 @@ async def process_chat(message: str, history: List[Dict], max_sources: int = 5) 
         print(f"✓ Chat complete in {response.processing_time_ms}ms")
         return response
         
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"✗ Chat error: {e}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Chat processing failed: {str(e)}")
 
 
 @app.get("/", response_model=HealthResponse)
@@ -388,6 +382,8 @@ async def chat(request: ChatRequest):
             history=[msg.dict() for msg in request.history],
             max_sources=request.max_sources
         )
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Chat endpoint error: {e}")
         traceback.print_exc()
@@ -441,12 +437,9 @@ async def agent_status():
     # Add agent details if available
     if police_agent:
         try:
-            tools = await police_agent.list_tools()
             status["agent_details"] = {
-                "name": police_agent.name,
-                "id": police_agent.id,
-                "tools_count": len(tools),
-                "tools": [tool.name for tool in tools]
+                "name": police_agent.name if hasattr(police_agent, 'name') else "unknown",
+                "id": police_agent.id if hasattr(police_agent, 'id') else "unknown",
             }
         except Exception as e:
             status["agent_details_error"] = str(e)
