@@ -81,14 +81,26 @@ async def initialize_parlant():
         )
         print("✓ Parlant server object created")
         
-        print("Step 2: Waiting for server to be ready...")
-        await parlant_server.ready.wait()
-        print("✓ Parlant server is ready")
+        print("Step 2: Waiting for server to be ready (60s timeout)...")
+        try:
+            await asyncio.wait_for(parlant_server.ready.wait(), timeout=60.0)
+            print("✓ Parlant server is ready")
+        except asyncio.TimeoutError:
+            print("⚠ Parlant server ready timeout - attempting to continue anyway...")
+            # Try to proceed even if ready signal times out
+            await asyncio.sleep(5)  # Give it a bit more time
         
         # List existing agents
         print("Step 3: Listing existing agents...")
-        agents = await parlant_server.list_agents()
-        print(f"✓ Found {len(agents)} existing agent(s)")
+        try:
+            agents = await asyncio.wait_for(parlant_server.list_agents(), timeout=10.0)
+            print(f"✓ Found {len(agents)} existing agent(s)")
+        except asyncio.TimeoutError:
+            print("⚠ Listing agents timeout - assuming no agents exist")
+            agents = []
+        except Exception as e:
+            print(f"⚠ Error listing agents: {e} - assuming no agents exist")
+            agents = []
         
         if agents:
             print(f"Step 4: Using existing agent: {agents[0].name}")
@@ -98,11 +110,17 @@ async def initialize_parlant():
             print("Step 4: No existing agents found, creating new agent...")
             
             try:
-                police_agent = await parlant_server.create_agent(
-                    name="Kerala Police Assistant",
-                    description="AI assistant for Kerala Police"
+                police_agent = await asyncio.wait_for(
+                    parlant_server.create_agent(
+                        name="Kerala Police Assistant",
+                        description="AI assistant for Kerala Police"
+                    ),
+                    timeout=30.0
                 )
                 print(f"✓ Agent created: {police_agent.name} (ID: {police_agent.id})")
+            except asyncio.TimeoutError:
+                print(f"✗ AGENT CREATION TIMEOUT (30s)")
+                raise RuntimeError("Agent creation timed out after 30 seconds")
             except Exception as create_error:
                 print(f"✗ AGENT CREATION FAILED:")
                 print(f"  Error type: {type(create_error).__name__}")
@@ -113,41 +131,62 @@ async def initialize_parlant():
             # Add guidelines
             print("Step 5: Adding guidelines...")
             try:
-                await police_agent.add_guideline(
-                    condition="always",
-                    action="Use search_police_website tool. Be helpful."
+                await asyncio.wait_for(
+                    police_agent.add_guideline(
+                        condition="always",
+                        action="Use search_police_website tool. Be helpful."
+                    ),
+                    timeout=10.0
                 )
                 print("✓ Guideline 1 added")
                 
-                await police_agent.add_guideline(
-                    condition="user message is not in English",
-                    action="Use translate_to_english tool first."
+                await asyncio.wait_for(
+                    police_agent.add_guideline(
+                        condition="user message is not in English",
+                        action="Use translate_to_english tool first."
+                    ),
+                    timeout=10.0
                 )
                 print("✓ Guideline 2 added")
+            except asyncio.TimeoutError:
+                print(f"⚠ GUIDELINE ADDITION TIMEOUT - continuing anyway")
             except Exception as guideline_error:
-                print(f"✗ GUIDELINE ADDITION FAILED: {guideline_error}")
+                print(f"⚠ GUIDELINE ADDITION FAILED: {guideline_error}")
                 traceback.print_exc()
                 # Continue anyway - agent is created
             
             # Add tools
             print("Step 6: Adding tools...")
             try:
-                await police_agent.add_tool(ParlantRAGTool())
+                await asyncio.wait_for(
+                    police_agent.add_tool(ParlantRAGTool()),
+                    timeout=10.0
+                )
                 print("✓ RAG tool added")
                 
-                await police_agent.add_tool(ParlantTranslationTool())
+                await asyncio.wait_for(
+                    police_agent.add_tool(ParlantTranslationTool()),
+                    timeout=10.0
+                )
                 print("✓ Translation tool added")
+            except asyncio.TimeoutError:
+                print(f"⚠ TOOL ADDITION TIMEOUT - continuing anyway")
             except Exception as tool_error:
-                print(f"✗ TOOL ADDITION FAILED: {tool_error}")
+                print(f"⚠ TOOL ADDITION FAILED: {tool_error}")
                 traceback.print_exc()
                 # Continue anyway - agent is created
         
         # Verify tools
         print("Step 7: Verifying agent setup...")
-        tools = await police_agent.list_tools()
-        print(f"✓ Agent has {len(tools)} tool(s)")
-        for tool in tools:
-            print(f"  - {tool.name}")
+        try:
+            tools = await asyncio.wait_for(police_agent.list_tools(), timeout=10.0)
+            print(f"✓ Agent has {len(tools)} tool(s)")
+            for tool in tools:
+                print(f"  - {tool.name}")
+        except asyncio.TimeoutError:
+            print(f"⚠ Tool listing timeout")
+        except Exception as e:
+            print(f"⚠ Tool listing failed: {e}")
         
         # Final verification
         print("Step 8: Final verification...")
